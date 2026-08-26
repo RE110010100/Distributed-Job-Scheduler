@@ -1,0 +1,22 @@
+# Binaries
+bin/
+*.exe
+*.out
+
+# Test binaries
+*.test
+
+# Coverage
+coverage.out
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+
+# Environment
+.env
+
+Generic_Distributed_Job_Scheduler_V1_Specification.md
