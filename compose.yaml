@@ -1,0 +1,30 @@
+name: distributed-job-scheduler
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  environment:
+    DJS_ENVIRONMENT: ${DJS_ENVIRONMENT:-development}
+    DJS_SHUTDOWN_TIMEOUT: ${DJS_SHUTDOWN_TIMEOUT:-10s}
+  stop_grace_period: 15s
+
+services:
+  api:
+    <<: *service-defaults
+    build:
+      context: .
+      args:
+        SERVICE: api
+
+  scheduler:
+    <<: *service-defaults
+    build:
+      context: .
+      args:
+        SERVICE: scheduler
+
+  worker:
+    <<: *service-defaults
+    build:
+      context: .
+      args:
+        SERVICE: worker
