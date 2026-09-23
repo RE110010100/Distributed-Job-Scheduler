@@ -1,5 +1,7 @@
+// Package requestid provides utilities for working with request identifiers.
 package requestid
 
+// Request ID header names.
 const (
 	HTTPHeader   = "X-Request-ID"
 	GRPCMetadata = "x-request-id"
@@ -7,6 +9,7 @@ const (
 	MaxLength = 128
 )
 
+// Valid reports whether id is a valid request identifier.
 func Valid(id string) bool {
 	if len(id) == 0 || len(id) > MaxLength {
 		return false
