@@ -6,6 +6,8 @@ GO ?= go
 	test-race \
 	vet \
 	fmt \
+	lint \
+	ci \
 	run-api \
 	run-scheduler \
 	run-worker \
@@ -41,3 +43,8 @@ dev-up:
 
 dev-down:
 	docker compose down --remove-orphans
+
+lint:
+	golangci-lint run
+
+ci: build test test-race vet lint

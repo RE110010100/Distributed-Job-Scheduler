@@ -1,3 +1,4 @@
+// Package config provides configuration loading and validation for the application.
 package config
 
 import (
@@ -7,8 +8,10 @@ import (
 	"time"
 )
 
+// Environment represents the runtime environment of the service.
 type Environment string
 
+// Supported application environments.
 const (
 	EnvironmentDevelopment Environment = "development"
 	EnvironmentTest        Environment = "test"
@@ -21,11 +24,13 @@ const (
 	defaultShutdownTimeout = 10 * time.Second
 )
 
+// Config contains the application's runtime configuration.
 type Config struct {
 	Environment     Environment
 	ShutdownTimeout time.Duration
 }
 
+// Load loads and validates the application configuration.
 func Load() (Config, error) {
 	cfg := Config{
 		Environment:     defaultEnvironment,
@@ -53,6 +58,7 @@ func Load() (Config, error) {
 	return cfg, nil
 }
 
+// Validate checks whether the configuration is valid.
 func (c Config) Validate() error {
 	switch c.Environment {
 	case EnvironmentDevelopment,

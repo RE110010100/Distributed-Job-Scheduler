@@ -1,3 +1,4 @@
+// Package main provides the scheduler service entry point.
 package main
 
 import (
