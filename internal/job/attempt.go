@@ -24,6 +24,7 @@ type ExecutionAttempt struct {
 	WorkerID           string
 	AttemptNumber      uint32
 	Status             AttemptStatus
+	Version            uint64
 	StartedAt          *time.Time
 	CompletedAt        *time.Time
 	FailureInformation *FailureInformation

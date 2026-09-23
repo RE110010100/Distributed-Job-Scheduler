@@ -32,6 +32,7 @@ type Job struct {
 	IdempotencyKey        string
 	Spec                  Specification
 	Status                Status
+	Version               uint64
 	CreatedAt             time.Time
 	StartedAt             *time.Time
 	CompletedAt           *time.Time
