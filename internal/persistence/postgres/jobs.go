@@ -362,3 +362,61 @@ func (s *Store) CreateJobIdempotent(
 
 	return result, created, nil
 }
+
+// ListJobs returns up to limit jobs, newest first.
+func (s *Store) ListJobs(
+	ctx context.Context,
+	limit int,
+) ([]*job.Job, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf(
+			"job list limit must be greater than zero",
+		)
+	}
+
+	const query = `
+		SELECT
+			job_id,
+			owner_id,
+			COALESCE(idempotency_key, ''),
+			specification,
+			status,
+			version,
+			created_at,
+			started_at,
+			completed_at,
+			cancellation_requested
+		FROM jobs
+		ORDER BY created_at DESC, job_id DESC
+		LIMIT $1
+	`
+
+	rows, err := s.pool.Query(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list jobs: %w", err)
+	}
+	defer rows.Close()
+
+	jobs := make([]*job.Job, 0)
+
+	for rows.Next() {
+		j, err := scanJob(rows)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"scan listed job: %w",
+				err,
+			)
+		}
+
+		jobs = append(jobs, j)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf(
+			"iterate listed jobs: %w",
+			err,
+		)
+	}
+
+	return jobs, nil
+}

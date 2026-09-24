@@ -22,12 +22,15 @@ const (
 const (
 	defaultEnvironment     = EnvironmentDevelopment
 	defaultShutdownTimeout = 10 * time.Second
+	defaultAPIAddress      = ":8080"
 )
 
 // Config contains the application's runtime configuration.
 type Config struct {
 	Environment     Environment
 	ShutdownTimeout time.Duration
+	APIAddress      string
+	DatabaseURL     string
 }
 
 // Load loads and validates the application configuration.
@@ -36,6 +39,8 @@ func Load() (Config, error) {
 		Environment:     defaultEnvironment,
 		ShutdownTimeout: defaultShutdownTimeout,
 	}
+
+	cfg.APIAddress = defaultAPIAddress
 
 	if value, ok := os.LookupEnv("DJS_ENVIRONMENT"); ok {
 		cfg.Environment = Environment(strings.TrimSpace(value))
@@ -49,6 +54,14 @@ func Load() (Config, error) {
 		}
 
 		cfg.ShutdownTimeout = duration
+	}
+
+	if value, ok := os.LookupEnv("DJS_API_ADDRESS"); ok {
+		cfg.APIAddress = strings.TrimSpace(value)
+	}
+
+	if value, ok := os.LookupEnv("DJS_DATABASE_URL"); ok {
+		cfg.DatabaseURL = strings.TrimSpace(value)
 	}
 
 	if err := cfg.Validate(); err != nil {
@@ -77,6 +90,10 @@ func (c Config) Validate() error {
 			"DJS_SHUTDOWN_TIMEOUT must be greater than zero: got %s",
 			c.ShutdownTimeout,
 		)
+	}
+
+	if strings.TrimSpace(c.APIAddress) == "" {
+		return fmt.Errorf("DJS_API_ADDRESS must not be empty")
 	}
 
 	return nil

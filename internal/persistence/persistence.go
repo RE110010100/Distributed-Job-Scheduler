@@ -27,6 +27,11 @@ type JobRepository interface {
 
 	GetJob(ctx context.Context, id job.ID) (*job.Job, error)
 
+	ListJobs(
+		ctx context.Context,
+		limit int,
+	) ([]*job.Job, error)
+
 	TransitionJobStatus(
 		ctx context.Context,
 		id job.ID,
