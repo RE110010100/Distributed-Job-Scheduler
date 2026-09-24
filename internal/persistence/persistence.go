@@ -19,6 +19,12 @@ var (
 // JobRepository persists logical jobs.
 type JobRepository interface {
 	CreateJob(ctx context.Context, j *job.Job) error
+
+	CreateJobIdempotent(
+		ctx context.Context,
+		j *job.Job,
+	) (*job.Job, bool, error)
+
 	GetJob(ctx context.Context, id job.ID) (*job.Job, error)
 
 	TransitionJobStatus(

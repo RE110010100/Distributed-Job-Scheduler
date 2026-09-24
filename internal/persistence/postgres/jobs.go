@@ -238,3 +238,127 @@ func (s *Store) classifyJobTransitionMiss(
 
 	return persistence.ErrConflict
 }
+
+// CreateJobIdempotent inserts j unless the owner already has a job with the
+// same idempotency key, in which case the existing job is returned. The
+// boolean result reports whether a new job was created. Jobs without an
+// idempotency key are always created.
+func (s *Store) CreateJobIdempotent(
+	ctx context.Context,
+	j *job.Job,
+) (*job.Job, bool, error) {
+	if j.IdempotencyKey == "" {
+		if err := s.CreateJob(ctx, j); err != nil {
+			return nil, false, err
+		}
+
+		return j, true, nil
+	}
+
+	specification, err := json.Marshal(j.Spec)
+	if err != nil {
+		return nil, false, fmt.Errorf(
+			"marshal job specification: %w",
+			err,
+		)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf(
+			"begin idempotent job transaction: %w",
+			err,
+		)
+	}
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	const insert = `
+		INSERT INTO jobs (
+			job_id,
+			owner_id,
+			idempotency_key,
+			specification,
+			status,
+			version,
+			created_at,
+			started_at,
+			completed_at,
+			cancellation_requested
+		)
+		VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9)
+		ON CONFLICT (owner_id, idempotency_key)
+			WHERE idempotency_key IS NOT NULL
+		DO NOTHING
+		RETURNING
+			job_id
+	`
+
+	var insertedID job.ID
+
+	err = tx.QueryRow(
+		ctx,
+		insert,
+		j.ID,
+		j.OwnerID,
+		j.IdempotencyKey,
+		specification,
+		j.Status,
+		j.CreatedAt,
+		j.StartedAt,
+		j.CompletedAt,
+		j.CancellationRequested,
+	).Scan(&insertedID)
+
+	created := err == nil
+
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return nil, false, fmt.Errorf(
+			"insert idempotent job: %w",
+			err,
+		)
+	}
+
+	const selectJob = `
+		SELECT
+			job_id,
+			owner_id,
+			COALESCE(idempotency_key, ''),
+			specification,
+			status,
+			version,
+			created_at,
+			started_at,
+			completed_at,
+			cancellation_requested
+		FROM jobs
+		WHERE
+			owner_id = $1
+			AND idempotency_key = $2
+	`
+
+	result, err := scanJob(
+		tx.QueryRow(
+			ctx,
+			selectJob,
+			j.OwnerID,
+			j.IdempotencyKey,
+		),
+	)
+	if err != nil {
+		return nil, false, fmt.Errorf(
+			"load idempotent job: %w",
+			err,
+		)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, fmt.Errorf(
+			"commit idempotent job transaction: %w",
+			err,
+		)
+	}
+
+	return result, created, nil
+}
