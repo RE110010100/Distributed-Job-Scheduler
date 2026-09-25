@@ -10,13 +10,18 @@ import (
 // Server implements the HTTP job-management API.
 type Server struct {
 	jobs persistence.JobRepository
+	auth *Authenticator
 	mux  *http.ServeMux
 }
 
 // NewServer creates an API server backed by jobs.
-func NewServer(jobs persistence.JobRepository) *Server {
+func NewServer(
+	jobs persistence.JobRepository,
+	auth *Authenticator,
+) *Server {
 	s := &Server{
 		jobs: jobs,
+		auth: auth,
 		mux:  http.NewServeMux(),
 	}
 
@@ -36,5 +41,8 @@ func (s *Server) ServeHTTP(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	s.withRequestID(s.mux).ServeHTTP(w, r)
+	handler := s.withAuthentication(s.mux)
+	handler = s.withRequestID(handler)
+
+	handler.ServeHTTP(w, r)
 }

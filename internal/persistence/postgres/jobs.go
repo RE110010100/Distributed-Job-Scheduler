@@ -363,15 +363,32 @@ func (s *Store) CreateJobIdempotent(
 	return result, created, nil
 }
 
-// ListJobs returns up to limit jobs, newest first.
+// ListJobs returns one bounded page of jobs for an owner.
 func (s *Store) ListJobs(
 	ctx context.Context,
-	limit int,
-) ([]*job.Job, error) {
-	if limit <= 0 {
-		return nil, fmt.Errorf(
-			"job list limit must be greater than zero",
-		)
+	options persistence.ListJobsOptions,
+) (persistence.JobPage, error) {
+	if options.OwnerID == "" {
+		return persistence.JobPage{},
+			fmt.Errorf("job list owner ID must not be empty")
+	}
+
+	if options.Limit <= 0 {
+		return persistence.JobPage{},
+			fmt.Errorf("job list limit must be greater than zero")
+	}
+
+	var status any
+	if options.Status != nil {
+		status = *options.Status
+	}
+
+	var cursorCreatedAt any
+	var cursorJobID any
+
+	if options.Cursor != nil {
+		cursorCreatedAt = options.Cursor.CreatedAt
+		cursorJobID = options.Cursor.JobID
 	}
 
 	const query = `
@@ -387,36 +404,92 @@ func (s *Store) ListJobs(
 			completed_at,
 			cancellation_requested
 		FROM jobs
+		WHERE
+			owner_id = $1
+			AND ($2::text IS NULL OR status = $2)
+			AND (
+				$3::timestamptz IS NULL
+				OR (created_at, job_id) < ($3, $4)
+			)
 		ORDER BY created_at DESC, job_id DESC
-		LIMIT $1
+		LIMIT $5
 	`
 
-	rows, err := s.pool.Query(ctx, query, limit)
+	// Fetch one extra row so we know whether another page exists.
+	rows, err := s.pool.Query(
+		ctx,
+		query,
+		options.OwnerID,
+		status,
+		cursorCreatedAt,
+		cursorJobID,
+		options.Limit+1,
+	)
 	if err != nil {
-		return nil, fmt.Errorf("list jobs: %w", err)
+		return persistence.JobPage{},
+			fmt.Errorf("list jobs: %w", err)
 	}
 	defer rows.Close()
 
-	jobs := make([]*job.Job, 0)
+	jobs := make([]*job.Job, 0, options.Limit+1)
 
 	for rows.Next() {
 		j, err := scanJob(rows)
 		if err != nil {
-			return nil, fmt.Errorf(
-				"scan listed job: %w",
-				err,
-			)
+			return persistence.JobPage{},
+				fmt.Errorf("scan listed job: %w", err)
 		}
 
 		jobs = append(jobs, j)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf(
-			"iterate listed jobs: %w",
-			err,
-		)
+		return persistence.JobPage{},
+			fmt.Errorf("iterate listed jobs: %w", err)
 	}
 
-	return jobs, nil
+	page := persistence.JobPage{}
+
+	if len(jobs) > options.Limit {
+		jobs = jobs[:options.Limit]
+
+		last := jobs[len(jobs)-1]
+
+		page.NextCursor = &persistence.JobCursor{
+			CreatedAt: last.CreatedAt,
+			JobID:     last.ID,
+		}
+	}
+
+	page.Jobs = jobs
+
+	return page, nil
+}
+
+// GetJobForOwner returns a job only when it belongs to ownerID.
+func (s *Store) GetJobForOwner(
+	ctx context.Context,
+	id job.ID,
+	ownerID string,
+) (*job.Job, error) {
+	const query = `
+		SELECT
+			job_id,
+			owner_id,
+			COALESCE(idempotency_key, ''),
+			specification,
+			status,
+			version,
+			created_at,
+			started_at,
+			completed_at,
+			cancellation_requested
+		FROM jobs
+		WHERE job_id = $1
+			AND owner_id = $2
+	`
+
+	return scanJob(
+		s.pool.QueryRow(ctx, query, id, ownerID),
+	)
 }

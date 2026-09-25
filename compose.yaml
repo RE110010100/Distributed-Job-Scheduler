@@ -1,10 +1,13 @@
 name: distributed-job-scheduler
 
+x-service-environment: &service-environment
+  DJS_ENVIRONMENT: ${DJS_ENVIRONMENT:-development}
+  DJS_SHUTDOWN_TIMEOUT: ${DJS_SHUTDOWN_TIMEOUT:-10s}
+
 x-service-defaults: &service-defaults
   restart: unless-stopped
   environment:
-    DJS_ENVIRONMENT: ${DJS_ENVIRONMENT:-development}
-    DJS_SHUTDOWN_TIMEOUT: ${DJS_SHUTDOWN_TIMEOUT:-10s}
+    <<: *service-environment
   stop_grace_period: 15s
 
 services:
@@ -14,6 +17,16 @@ services:
       context: .
       args:
         SERVICE: api
+    environment:
+      <<: *service-environment
+      DJS_API_ADDRESS: ":8080"
+      DJS_DATABASE_URL: postgres://postgres:postgres@postgres:5432/djs?sslmode=disable
+      DJS_INTERNAL_API_CREDENTIALS: ${DJS_INTERNAL_API_CREDENTIALS:-example-service:change-me}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   scheduler:
     <<: *service-defaults
@@ -37,3 +50,8 @@ services:
       POSTGRES_DB: djs
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d djs"]
+      interval: 2s
+      timeout: 5s
+      retries: 15

@@ -3,8 +3,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,13 +15,9 @@ import (
 	"github.com/RE110010100/Distributed-Job-Scheduler/internal/persistence"
 )
 
-const (
-	maxRequestBodyBytes = 1 << 20
-	defaultListLimit    = 100
-)
+const maxRequestBodyBytes = 1 << 20
 
 type createJobRequest struct {
-	OwnerID        string               `json:"owner_id"`
 	IdempotencyKey string               `json:"idempotency_key,omitempty"`
 	ContainerImage string               `json:"container_image"`
 	Command        []string             `json:"command,omitempty"`
@@ -60,7 +58,8 @@ type jobResponse struct {
 }
 
 type listJobsResponse struct {
-	Jobs []jobResponse `json:"jobs"`
+	Jobs       []jobResponse `json:"jobs"`
+	NextCursor string        `json:"next_cursor,omitempty"`
 }
 
 func (s *Server) handleCreateJob(
@@ -90,6 +89,18 @@ func (s *Server) handleCreateJob(
 		return
 	}
 
+	ownerID, ok := ownerIDFromContext(r.Context())
+	if !ok {
+		writeAPIError(
+			w,
+			r,
+			http.StatusUnauthorized,
+			apierrors.CodeUnauthenticated,
+			"authentication required",
+		)
+		return
+	}
+
 	id, err := job.NewID()
 	if err != nil {
 		writeAPIError(
@@ -106,7 +117,7 @@ func (s *Server) handleCreateJob(
 
 	j := &job.Job{
 		ID:             id,
-		OwnerID:        strings.TrimSpace(request.OwnerID),
+		OwnerID:        ownerID,
 		IdempotencyKey: strings.TrimSpace(request.IdempotencyKey),
 		Spec:           request.specification(),
 		Status:         job.StatusQueued,
@@ -164,9 +175,6 @@ func decodeCreateJobRequest(
 }
 
 func validateCreateJobRequest(request createJobRequest) error {
-	if strings.TrimSpace(request.OwnerID) == "" {
-		return errors.New("owner_id is required")
-	}
 
 	if strings.TrimSpace(request.ContainerImage) == "" {
 		return errors.New("container_image is required")
@@ -305,7 +313,9 @@ func (s *Server) handleGetJob(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	id := job.ID(strings.TrimSpace(r.PathValue("job_id")))
+	id := job.ID(
+		strings.TrimSpace(r.PathValue("job_id")),
+	)
 
 	if id == "" {
 		writeAPIError(
@@ -318,7 +328,24 @@ func (s *Server) handleGetJob(
 		return
 	}
 
-	j, err := s.jobs.GetJob(r.Context(), id)
+	ownerID, ok := ownerIDFromContext(r.Context())
+	if !ok {
+		writeAPIError(
+			w,
+			r,
+			http.StatusUnauthorized,
+			apierrors.CodeUnauthenticated,
+			"authentication required",
+		)
+		return
+	}
+
+	j, err := s.jobs.GetJobForOwner(
+		r.Context(),
+		id,
+		ownerID,
+	)
+
 	if errors.Is(err, persistence.ErrNotFound) {
 		writeAPIError(
 			w,
@@ -352,9 +379,79 @@ func (s *Server) handleListJobs(
 	w http.ResponseWriter,
 	r *http.Request,
 ) {
-	jobs, err := s.jobs.ListJobs(
+	if err := validateListQuery(r); err != nil {
+		writeAPIError(
+			w,
+			r,
+			http.StatusBadRequest,
+			apierrors.CodeInvalidArgument,
+			err.Error(),
+		)
+		return
+	}
+
+	status, err := parseStatus(
+		r.URL.Query().Get("status"),
+	)
+	if err != nil {
+		writeAPIError(
+			w,
+			r,
+			http.StatusBadRequest,
+			apierrors.CodeInvalidArgument,
+			err.Error(),
+		)
+		return
+	}
+
+	limit, err := parseListLimit(
+		r.URL.Query().Get("limit"),
+	)
+	if err != nil {
+		writeAPIError(
+			w,
+			r,
+			http.StatusBadRequest,
+			apierrors.CodeInvalidArgument,
+			err.Error(),
+		)
+		return
+	}
+
+	cursor, err := decodeCursor(
+		r.URL.Query().Get("cursor"),
+	)
+	if err != nil {
+		writeAPIError(
+			w,
+			r,
+			http.StatusBadRequest,
+			apierrors.CodeInvalidArgument,
+			err.Error(),
+		)
+		return
+	}
+
+	ownerID, ok := ownerIDFromContext(r.Context())
+	if !ok {
+		writeAPIError(
+			w,
+			r,
+			http.StatusUnauthorized,
+			apierrors.CodeUnauthenticated,
+			"authentication required",
+		)
+		return
+	}
+
+	page, err := s.jobs.ListJobs(
 		r.Context(),
-		defaultListLimit,
+		persistence.ListJobsOptions{
+			OwnerID: ownerID,
+			Status:  status,
+			Limit:   limit,
+			Cursor:  cursor,
+		},
 	)
 	if err != nil {
 		writeAPIError(
@@ -368,14 +465,26 @@ func (s *Server) handleListJobs(
 	}
 
 	response := listJobsResponse{
-		Jobs: make([]jobResponse, 0, len(jobs)),
+		Jobs: make([]jobResponse, 0, len(page.Jobs)),
 	}
 
-	for _, j := range jobs {
+	for _, j := range page.Jobs {
 		response.Jobs = append(
 			response.Jobs,
 			newJobResponse(j),
 		)
+	}
+
+	response.NextCursor, err = encodeCursor(page.NextCursor)
+	if err != nil {
+		writeAPIError(
+			w,
+			r,
+			http.StatusInternalServerError,
+			apierrors.CodeInternal,
+			"failed to encode pagination cursor",
+		)
+		return
 	}
 
 	writeJSON(
@@ -383,4 +492,60 @@ func (s *Server) handleListJobs(
 		http.StatusOK,
 		response,
 	)
+}
+
+func parseStatus(value string) (*job.Status, error) {
+	if value == "" {
+		return nil, nil
+	}
+
+	status := job.Status(strings.ToUpper(value))
+
+	if !status.Valid() {
+		return nil, fmt.Errorf(
+			"invalid status %q",
+			value,
+		)
+	}
+
+	return &status, nil
+}
+
+func parseListLimit(value string) (int, error) {
+	if value == "" {
+		return defaultListLimit, nil
+	}
+
+	limit, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, errors.New("limit must be an integer")
+	}
+
+	if limit <= 0 || limit > maxListLimit {
+		return 0, fmt.Errorf(
+			"limit must be between 1 and %d",
+			maxListLimit,
+		)
+	}
+
+	return limit, nil
+}
+
+func validateListQuery(r *http.Request) error {
+	allowed := map[string]struct{}{
+		"status": {},
+		"limit":  {},
+		"cursor": {},
+	}
+
+	for key := range r.URL.Query() {
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf(
+				"unsupported query parameter %q",
+				key,
+			)
+		}
+	}
+
+	return nil
 }

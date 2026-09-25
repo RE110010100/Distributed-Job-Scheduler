@@ -63,3 +63,9 @@ CREATE INDEX IF NOT EXISTS execution_attempts_job_id_idx
 CREATE UNIQUE INDEX IF NOT EXISTS jobs_owner_idempotency_key_idx
     ON jobs (owner_id, idempotency_key)
     WHERE idempotency_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS jobs_owner_created_at_idx
+	ON jobs (owner_id, created_at DESC, job_id DESC);
+
+CREATE INDEX IF NOT EXISTS jobs_owner_status_created_at_idx
+	ON jobs (owner_id, status, created_at DESC, job_id DESC);

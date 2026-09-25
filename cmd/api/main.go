@@ -22,8 +22,21 @@ func main() {
 		log.Fatalf("load configuration: %v", err)
 	}
 
-	if cfg.DatabaseURL == "" {
-		log.Fatal("DJS_DATABASE_URL must be set for the API service")
+	databaseURL := os.Getenv("DJS_DATABASE_URL")
+	if databaseURL == "" {
+		log.Fatal("DJS_DATABASE_URL must be set")
+	}
+
+	credentials, err := api.ParseServiceCredentials(
+		os.Getenv("DJS_INTERNAL_API_CREDENTIALS"),
+	)
+	if err != nil {
+		log.Fatalf("load internal API credentials: %v", err)
+	}
+
+	authenticator, err := api.NewAuthenticator(credentials)
+	if err != nil {
+		log.Fatalf("create authenticator: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(
@@ -33,7 +46,7 @@ func main() {
 	)
 	defer stop()
 
-	store, err := postgres.Open(ctx, cfg.DatabaseURL)
+	store, err := postgres.Open(ctx, databaseURL)
 	if err != nil {
 		log.Fatalf("open postgres store: %v", err)
 	}
@@ -43,10 +56,13 @@ func main() {
 		log.Fatalf("migrate postgres store: %v", err)
 	}
 
-	handler := api.NewServer(store)
+	handler := api.NewServer(
+		store,
+		authenticator,
+	)
 
 	server := &http.Server{
-		Addr:              cfg.APIAddress,
+		Addr:              ":8080",
 		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -57,7 +73,7 @@ func main() {
 		log.Printf(
 			"api service started environment=%s address=%s",
 			cfg.Environment,
-			cfg.APIAddress,
+			server.Addr,
 		)
 
 		serverErrors <- server.ListenAndServe()
@@ -65,10 +81,12 @@ func main() {
 
 	select {
 	case <-ctx.Done():
+
 	case err := <-serverErrors:
 		if !errors.Is(err, http.ErrServerClosed) {
 			log.Fatalf("serve HTTP: %v", err)
 		}
+
 		return
 	}
 
@@ -82,8 +100,5 @@ func main() {
 		log.Printf("shutdown HTTP server: %v", err)
 	}
 
-	log.Printf(
-		"api service stopped shutdown_timeout=%s",
-		cfg.ShutdownTimeout,
-	)
+	log.Print("api service stopped")
 }

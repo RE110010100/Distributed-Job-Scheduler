@@ -16,6 +16,26 @@ var (
 	ErrConflict = errors.New("persistence: version conflict")
 )
 
+// ListJobsOptions controls a bounded query over logical jobs.
+type ListJobsOptions struct {
+	OwnerID string
+	Status  *job.Status
+	Limit   int
+	Cursor  *JobCursor
+}
+
+// JobCursor identifies the last item returned by a previous page.
+type JobCursor struct {
+	CreatedAt time.Time
+	JobID     job.ID
+}
+
+// JobPage contains one bounded page of logical jobs.
+type JobPage struct {
+	Jobs       []*job.Job
+	NextCursor *JobCursor
+}
+
 // JobRepository persists logical jobs.
 type JobRepository interface {
 	CreateJob(ctx context.Context, j *job.Job) error
@@ -29,8 +49,14 @@ type JobRepository interface {
 
 	ListJobs(
 		ctx context.Context,
-		limit int,
-	) ([]*job.Job, error)
+		options ListJobsOptions,
+	) (JobPage, error)
+
+	GetJobForOwner(
+		ctx context.Context,
+		id job.ID,
+		ownerID string,
+	) (*job.Job, error)
 
 	TransitionJobStatus(
 		ctx context.Context,
