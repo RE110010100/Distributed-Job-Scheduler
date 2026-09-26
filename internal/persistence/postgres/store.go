@@ -45,3 +45,21 @@ func (s *Store) Migrate(ctx context.Context) error {
 
 	return nil
 }
+
+// ResetForTesting removes persisted scheduler state.
+//
+// It is intended only for integration-test setup and teardown.
+func (s *Store) ResetForTesting(ctx context.Context) error {
+	const statement = `
+		TRUNCATE TABLE
+			execution_attempts,
+			jobs
+		RESTART IDENTITY CASCADE
+	`
+
+	if _, err := s.pool.Exec(ctx, statement); err != nil {
+		return fmt.Errorf("reset postgres store: %w", err)
+	}
+
+	return nil
+}
