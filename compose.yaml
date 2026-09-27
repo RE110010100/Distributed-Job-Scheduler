@@ -34,6 +34,15 @@ services:
       context: .
       args:
         SERVICE: scheduler
+    environment:
+      <<: *service-environment
+      DJS_DATABASE_URL: postgres://postgres:postgres@postgres:5432/djs?sslmode=disable
+      DJS_SCHEDULER_GRPC_ADDRESS: ":9090"
+    ports:
+      - "9090:9090"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   worker:
     <<: *service-defaults
@@ -41,6 +50,14 @@ services:
       context: .
       args:
         SERVICE: worker
+    environment:
+      <<: *service-environment
+      DJS_WORKER_ID: worker-1
+      DJS_SCHEDULER_ADDRESS: scheduler:9090
+      DJS_WORKER_CPU_MILLIS: "4000"
+      DJS_WORKER_MEMORY_BYTES: "8589934592"
+    depends_on:
+      - scheduler
   
   postgres:
     image: postgres:17

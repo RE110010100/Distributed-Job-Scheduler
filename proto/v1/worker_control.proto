@@ -1,0 +1,109 @@
+syntax = "proto3";
+
+package djs.worker.v1;
+
+option go_package = "github.com/RE110010100/Distributed-Job-Scheduler/internal/gen/worker/v1;workerv1";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+service WorkerControlService {
+  rpc RegisterWorker(RegisterWorkerRequest) returns (RegisterWorkerResponse);
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Implemented in TASK-031.
+  rpc AcquireJob(AcquireJobRequest) returns (AcquireJobResponse);
+
+  // Implemented in TASK-048.
+  rpc PollCancellation(PollCancellationRequest)
+      returns (PollCancellationResponse);
+
+  // Implemented in TASK-036.
+  rpc ReportCompletion(ReportCompletionRequest)
+      returns (ReportCompletionResponse);
+}
+
+message WorkerCapacity {
+  int64 cpu_millis = 1;
+  int64 memory_bytes = 2;
+}
+
+message WorkerCapabilities {
+  repeated string container_runtimes = 1;
+}
+
+message RegisterWorkerRequest {
+  string worker_id = 1;
+  WorkerCapacity capacity = 2;
+  WorkerCapabilities capabilities = 3;
+}
+
+message RegisterWorkerResponse {
+  google.protobuf.Timestamp registered_at = 1;
+  google.protobuf.Duration heartbeat_interval = 2;
+}
+
+message HeartbeatRequest {
+  string worker_id = 1;
+
+  // Capacity currently available for new work.
+  WorkerCapacity available_capacity = 2;
+}
+
+message HeartbeatResponse {
+  google.protobuf.Timestamp acknowledged_at = 1;
+}
+
+message AcquireJobRequest {
+  string worker_id = 1;
+}
+
+message AcquireJobResponse {
+  optional JobAssignment assignment = 1;
+}
+
+message JobAssignment {
+  string job_id = 1;
+  string attempt_id = 2;
+  uint32 attempt_number = 3;
+
+  string container_image = 4;
+  repeated string command = 5;
+  repeated string args = 6;
+  map<string, string> environment = 7;
+
+  WorkerCapacity resource_request = 8;
+  WorkerCapacity resource_limit = 9;
+
+  google.protobuf.Duration timeout = 10;
+}
+
+message PollCancellationRequest {
+  string worker_id = 1;
+  string job_id = 2;
+  string attempt_id = 3;
+}
+
+message PollCancellationResponse {
+  bool cancellation_requested = 1;
+}
+
+enum AttemptOutcome {
+  ATTEMPT_OUTCOME_UNSPECIFIED = 0;
+  ATTEMPT_OUTCOME_SUCCEEDED = 1;
+  ATTEMPT_OUTCOME_FAILED = 2;
+  ATTEMPT_OUTCOME_CANCELLED = 3;
+}
+
+message ReportCompletionRequest {
+  string worker_id = 1;
+  string job_id = 2;
+  string attempt_id = 3;
+  AttemptOutcome outcome = 4;
+  string failure_code = 5;
+  string failure_message = 6;
+}
+
+message ReportCompletionResponse {
+  bool accepted = 1;
+}

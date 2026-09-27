@@ -8,6 +8,7 @@ GO ?= go
 	fmt \
 	lint \
 	ci \
+	proto \
 	run-api \
 	run-scheduler \
 	run-worker \
@@ -48,3 +49,11 @@ lint:
 	golangci-lint run
 
 ci: build test test-race vet lint
+
+proto:
+	protoc \
+		--go_out=. \
+		--go_opt=module=github.com/RE110010100/Distributed-Job-Scheduler \
+		--go-grpc_out=. \
+		--go-grpc_opt=module=github.com/RE110010100/Distributed-Job-Scheduler \
+		proto/v1/worker_control.proto

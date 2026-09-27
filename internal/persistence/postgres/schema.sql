@@ -54,6 +54,42 @@ CREATE TABLE IF NOT EXISTS execution_attempts (
         UNIQUE (job_id, attempt_number)
 );
 
+CREATE TABLE IF NOT EXISTS workers (
+    worker_id TEXT PRIMARY KEY,
+
+    cpu_millis BIGINT NOT NULL,
+    memory_bytes BIGINT NOT NULL,
+
+    available_cpu_millis BIGINT NOT NULL,
+    available_memory_bytes BIGINT NOT NULL,
+
+    container_runtimes TEXT[] NOT NULL DEFAULT '{}',
+
+    registered_at TIMESTAMPTZ NOT NULL,
+    last_heartbeat_at TIMESTAMPTZ NOT NULL,
+
+    CONSTRAINT workers_cpu_positive
+        CHECK (cpu_millis > 0),
+
+    CONSTRAINT workers_memory_positive
+        CHECK (memory_bytes > 0),
+
+    CONSTRAINT workers_available_cpu_nonnegative
+        CHECK (available_cpu_millis >= 0),
+
+    CONSTRAINT workers_available_memory_nonnegative
+        CHECK (available_memory_bytes >= 0),
+
+    CONSTRAINT workers_available_cpu_bounded
+        CHECK (available_cpu_millis <= cpu_millis),
+
+    CONSTRAINT workers_available_memory_bounded
+        CHECK (available_memory_bytes <= memory_bytes)
+);
+
+CREATE INDEX IF NOT EXISTS workers_last_heartbeat_idx
+    ON workers (last_heartbeat_at);
+
 CREATE INDEX IF NOT EXISTS jobs_status_created_at_idx
     ON jobs (status, created_at, job_id);
 

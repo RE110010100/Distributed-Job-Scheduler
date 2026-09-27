@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/RE110010100/Distributed-Job-Scheduler/internal/job"
+	"github.com/RE110010100/Distributed-Job-Scheduler/internal/worker"
 )
 
 var (
@@ -95,4 +96,25 @@ type AttemptRepository interface {
 type Repository interface {
 	JobRepository
 	AttemptRepository
+	WorkerRepository
+}
+
+// WorkerRepository persists worker registration, liveness, and capacity.
+type WorkerRepository interface {
+	RegisterWorker(
+		ctx context.Context,
+		w *worker.Worker,
+	) (*worker.Worker, error)
+
+	GetWorker(
+		ctx context.Context,
+		id worker.ID,
+	) (*worker.Worker, error)
+
+	HeartbeatWorker(
+		ctx context.Context,
+		id worker.ID,
+		available worker.Capacity,
+		at time.Time,
+	) (*worker.Worker, error)
 }
