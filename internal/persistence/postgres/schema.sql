@@ -124,3 +124,15 @@ CREATE INDEX IF NOT EXISTS jobs_owner_created_at_idx
 
 CREATE INDEX IF NOT EXISTS jobs_owner_status_created_at_idx
 	ON jobs (owner_id, status, created_at DESC, job_id DESC);
+
+CREATE INDEX IF NOT EXISTS jobs_queued_created_at_idx
+    ON jobs (created_at ASC, job_id ASC)
+    WHERE status = 'QUEUED';
+
+CREATE INDEX IF NOT EXISTS workers_available_capacity_idx
+    ON workers (
+        available_cpu_millis,
+        available_memory_bytes,
+        worker_id
+    )
+    WHERE status = 'AVAILABLE';

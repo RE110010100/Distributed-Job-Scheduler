@@ -97,6 +97,7 @@ type Repository interface {
 	JobRepository
 	AttemptRepository
 	WorkerRepository
+	SchedulingRepository
 }
 
 // WorkerRepository persists worker registration, liveness, and capacity.
@@ -122,4 +123,27 @@ type WorkerRepository interface {
 		ctx context.Context,
 		heartbeatBefore time.Time,
 	) (int64, error)
+}
+
+// SchedulingRepository provides the atomic persistence operations used
+// by the scheduler.
+type SchedulingRepository interface {
+	NextQueuedJob(
+		ctx context.Context,
+	) (*job.Job, error)
+
+	ListEligibleWorkers(
+		ctx context.Context,
+		required worker.Capacity,
+		limit int,
+	) ([]*worker.Worker, error)
+
+	AssignJob(
+		ctx context.Context,
+		jobID job.ID,
+		workerID worker.ID,
+		required worker.Capacity,
+		attemptID job.AttemptID,
+		at time.Time,
+	) (*job.ExecutionAttempt, error)
 }

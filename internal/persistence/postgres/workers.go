@@ -94,6 +94,7 @@ func (s *Store) GetWorker(
 	const query = `
 		SELECT
 			worker_id,
+			status,
 			cpu_millis,
 			memory_bytes,
 			available_cpu_millis,

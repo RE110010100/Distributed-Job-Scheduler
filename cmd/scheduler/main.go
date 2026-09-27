@@ -16,6 +16,7 @@ import (
 	"github.com/RE110010100/Distributed-Job-Scheduler/internal/controlplane"
 	workerv1 "github.com/RE110010100/Distributed-Job-Scheduler/internal/gen/worker/v1"
 	"github.com/RE110010100/Distributed-Job-Scheduler/internal/persistence/postgres"
+	"github.com/RE110010100/Distributed-Job-Scheduler/internal/scheduler"
 	"google.golang.org/grpc"
 )
 
@@ -100,8 +101,14 @@ func main() {
 		controlplane.NewServer(store),
 	)
 
+	jobScheduler := scheduler.New(
+		store,
+		logger,
+	)
+
 	serverErrors := make(chan error, 1)
 	monitorErrors := make(chan error, 1)
+	schedulerErrors := make(chan error, 1)
 
 	go func() {
 		serverErrors <- grpcServer.Serve(listener)
@@ -109,6 +116,10 @@ func main() {
 
 	go func() {
 		monitorErrors <- monitor.Run(ctx)
+	}()
+
+	go func() {
+		schedulerErrors <- jobScheduler.Run(ctx)
 	}()
 
 	log.Printf(
@@ -130,6 +141,14 @@ func main() {
 		if err != nil {
 			log.Fatalf(
 				"worker liveness monitor: %v",
+				err,
+			)
+		}
+
+	case err := <-schedulerErrors:
+		if err != nil {
+			log.Fatalf(
+				"scheduler loop: %v",
 				err,
 			)
 		}
