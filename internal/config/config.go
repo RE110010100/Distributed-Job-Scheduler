@@ -20,27 +20,37 @@ const (
 )
 
 const (
-	defaultEnvironment          = EnvironmentDevelopment
-	defaultShutdownTimeout      = 10 * time.Second
-	defaultAPIAddress           = ":8080"
-	defaultSchedulerGRPCAddress = ":9090"
+	defaultEnvironment                 = EnvironmentDevelopment
+	defaultShutdownTimeout             = 10 * time.Second
+	defaultAPIAddress                  = ":8080"
+	defaultSchedulerGRPCAddress        = ":9090"
+	defaultWorkerHeartbeatTimeout      = 15 * time.Second
+	defaultWorkerLivenessCheckInterval = 5 * time.Second
+	defaultGRPCRPCTimeout              = 5 * time.Second
 )
 
 // Config contains the application's runtime configuration.
 type Config struct {
-	Environment          Environment
-	ShutdownTimeout      time.Duration
-	APIAddress           string
-	DatabaseURL          string
-	SchedulerGRPCAddress string
+	Environment                 Environment
+	ShutdownTimeout             time.Duration
+	APIAddress                  string
+	DatabaseURL                 string
+	SchedulerGRPCAddress        string
+	WorkerHeartbeatTimeout      time.Duration
+	WorkerLivenessCheckInterval time.Duration
+	GRPCRPCTimeout              time.Duration
+	WorkerAuthenticationToken   string
 }
 
 // Load loads and validates the application configuration.
 func Load() (Config, error) {
 	cfg := Config{
-		Environment:          defaultEnvironment,
-		ShutdownTimeout:      defaultShutdownTimeout,
-		SchedulerGRPCAddress: defaultSchedulerGRPCAddress,
+		Environment:                 defaultEnvironment,
+		ShutdownTimeout:             defaultShutdownTimeout,
+		SchedulerGRPCAddress:        defaultSchedulerGRPCAddress,
+		WorkerHeartbeatTimeout:      defaultWorkerHeartbeatTimeout,
+		WorkerLivenessCheckInterval: defaultWorkerLivenessCheckInterval,
+		GRPCRPCTimeout:              defaultGRPCRPCTimeout,
 	}
 
 	cfg.APIAddress = defaultAPIAddress
@@ -73,6 +83,62 @@ func Load() (Config, error) {
 		cfg.SchedulerGRPCAddress = strings.TrimSpace(value)
 	}
 
+	if value, ok := os.LookupEnv(
+		"DJS_WORKER_HEARTBEAT_TIMEOUT",
+	); ok {
+		duration, err := time.ParseDuration(
+			strings.TrimSpace(value),
+		)
+		if err != nil {
+			return Config{}, fmt.Errorf(
+				"parse DJS_WORKER_HEARTBEAT_TIMEOUT: %w",
+				err,
+			)
+		}
+
+		cfg.WorkerHeartbeatTimeout = duration
+	}
+
+	if value, ok := os.LookupEnv(
+		"DJS_WORKER_LIVENESS_CHECK_INTERVAL",
+	); ok {
+		duration, err := time.ParseDuration(
+			strings.TrimSpace(value),
+		)
+		if err != nil {
+			return Config{}, fmt.Errorf(
+				"parse DJS_WORKER_LIVENESS_CHECK_INTERVAL: %w",
+				err,
+			)
+		}
+
+		cfg.WorkerLivenessCheckInterval = duration
+	}
+
+	if value, ok := os.LookupEnv(
+		"DJS_GRPC_RPC_TIMEOUT",
+	); ok {
+		duration, err := time.ParseDuration(
+			strings.TrimSpace(value),
+		)
+		if err != nil {
+			return Config{}, fmt.Errorf(
+				"parse DJS_GRPC_RPC_TIMEOUT: %w",
+				err,
+			)
+		}
+
+		cfg.GRPCRPCTimeout = duration
+	}
+
+	if value, ok := os.LookupEnv(
+		"DJS_WORKER_AUTH_TOKEN",
+	); ok {
+		cfg.WorkerAuthenticationToken = strings.TrimSpace(
+			value,
+		)
+	}
+
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
@@ -98,6 +164,24 @@ func (c Config) Validate() error {
 		return fmt.Errorf(
 			"DJS_SHUTDOWN_TIMEOUT must be greater than zero: got %s",
 			c.ShutdownTimeout,
+		)
+	}
+
+	if c.WorkerHeartbeatTimeout <= 0 {
+		return fmt.Errorf(
+			"DJS_WORKER_HEARTBEAT_TIMEOUT must be greater than zero",
+		)
+	}
+
+	if c.WorkerLivenessCheckInterval <= 0 {
+		return fmt.Errorf(
+			"DJS_WORKER_LIVENESS_CHECK_INTERVAL must be greater than zero",
+		)
+	}
+
+	if c.GRPCRPCTimeout <= 0 {
+		return fmt.Errorf(
+			"DJS_GRPC_RPC_TIMEOUT must be greater than zero",
 		)
 	}
 

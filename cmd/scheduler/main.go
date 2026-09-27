@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +29,12 @@ func main() {
 		log.Fatal("DJS_DATABASE_URL must be set")
 	}
 
+	if strings.TrimSpace(
+		cfg.WorkerAuthenticationToken,
+	) == "" {
+		log.Fatal("DJS_WORKER_AUTH_TOKEN must be set")
+	}
+
 	ctx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -35,7 +42,10 @@ func main() {
 	)
 	defer stop()
 
-	store, err := postgres.Open(ctx, cfg.DatabaseURL)
+	store, err := postgres.Open(
+		ctx,
+		cfg.DatabaseURL,
+	)
 	if err != nil {
 		log.Fatalf("open postgres store: %v", err)
 	}
@@ -43,6 +53,18 @@ func main() {
 
 	if err := store.Migrate(ctx); err != nil {
 		log.Fatalf("migrate postgres store: %v", err)
+	}
+
+	monitor, err := controlplane.NewLivenessMonitor(
+		store,
+		cfg.WorkerHeartbeatTimeout,
+		cfg.WorkerLivenessCheckInterval,
+	)
+	if err != nil {
+		log.Fatalf(
+			"create liveness monitor: %v",
+			err,
+		)
 	}
 
 	listener, err := net.Listen(
@@ -57,7 +79,21 @@ func main() {
 		)
 	}
 
-	grpcServer := grpc.NewServer()
+	logger := log.Default()
+
+	grpcServer := grpc.NewServer(
+		grpc.ChainUnaryInterceptor(
+			controlplane.UnaryObservabilityInterceptor(
+				logger,
+			),
+			controlplane.UnaryDeadlineInterceptor(
+				cfg.GRPCRPCTimeout,
+			),
+			controlplane.UnaryAuthenticationInterceptor(
+				cfg.WorkerAuthenticationToken,
+			),
+		),
+	)
 
 	workerv1.RegisterWorkerControlServiceServer(
 		grpcServer,
@@ -65,16 +101,21 @@ func main() {
 	)
 
 	serverErrors := make(chan error, 1)
+	monitorErrors := make(chan error, 1)
 
 	go func() {
-		log.Printf(
-			"scheduler service started environment=%s grpc_address=%s",
-			cfg.Environment,
-			cfg.SchedulerGRPCAddress,
-		)
-
 		serverErrors <- grpcServer.Serve(listener)
 	}()
+
+	go func() {
+		monitorErrors <- monitor.Run(ctx)
+	}()
+
+	log.Printf(
+		"scheduler service started environment=%s grpc_address=%s",
+		cfg.Environment,
+		cfg.SchedulerGRPCAddress,
+	)
 
 	select {
 	case <-ctx.Done():
@@ -83,8 +124,15 @@ func main() {
 		if !errors.Is(err, grpc.ErrServerStopped) {
 			log.Fatalf("serve gRPC: %v", err)
 		}
-
 		return
+
+	case err := <-monitorErrors:
+		if err != nil {
+			log.Fatalf(
+				"worker liveness monitor: %v",
+				err,
+			)
+		}
 	}
 
 	stopped := make(chan struct{})

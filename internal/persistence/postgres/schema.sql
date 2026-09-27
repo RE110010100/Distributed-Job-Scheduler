@@ -57,6 +57,8 @@ CREATE TABLE IF NOT EXISTS execution_attempts (
 CREATE TABLE IF NOT EXISTS workers (
     worker_id TEXT PRIMARY KEY,
 
+    status TEXT NOT NULL,
+
     cpu_millis BIGINT NOT NULL,
     memory_bytes BIGINT NOT NULL,
 
@@ -67,6 +69,10 @@ CREATE TABLE IF NOT EXISTS workers (
 
     registered_at TIMESTAMPTZ NOT NULL,
     last_heartbeat_at TIMESTAMPTZ NOT NULL,
+
+    CONSTRAINT workers_status_check CHECK (
+        status IN ('AVAILABLE', 'UNAVAILABLE')
+    ),
 
     CONSTRAINT workers_cpu_positive
         CHECK (cpu_millis > 0),
@@ -86,6 +92,19 @@ CREATE TABLE IF NOT EXISTS workers (
     CONSTRAINT workers_available_memory_bounded
         CHECK (available_memory_bytes <= memory_bytes)
 );
+
+-- Upgrade workers tables created before the status column existed.
+-- Existing rows start UNAVAILABLE until the worker registers again.
+ALTER TABLE workers
+    ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'UNAVAILABLE'
+        CONSTRAINT workers_status_check CHECK (
+            status IN ('AVAILABLE', 'UNAVAILABLE')
+        );
+
+ALTER TABLE workers ALTER COLUMN status DROP DEFAULT;
+
+CREATE INDEX IF NOT EXISTS workers_status_heartbeat_idx
+    ON workers (status, last_heartbeat_at);
 
 CREATE INDEX IF NOT EXISTS workers_last_heartbeat_idx
     ON workers (last_heartbeat_at);

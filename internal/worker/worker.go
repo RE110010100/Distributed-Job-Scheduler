@@ -27,9 +27,29 @@ func (c Capacity) Fits(required Capacity) bool {
 // Worker contains durable control-plane state for a worker.
 type Worker struct {
 	ID                ID
+	Status            Status
 	Capacity          Capacity
 	AvailableCapacity Capacity
 	ContainerRuntimes []string
 	RegisteredAt      time.Time
 	LastHeartbeatAt   time.Time
+}
+
+// Status describes whether a worker is eligible for scheduling.
+type Status string
+
+// Worker statuses.
+const (
+	StatusAvailable   Status = "AVAILABLE"
+	StatusUnavailable Status = "UNAVAILABLE"
+)
+
+// Valid reports whether the status is recognized.
+func (s Status) Valid() bool {
+	switch s {
+	case StatusAvailable, StatusUnavailable:
+		return true
+	default:
+		return false
+	}
 }

@@ -12,10 +12,11 @@ import (
 
 // ClientConfig configures one worker's control-plane connection.
 type ClientConfig struct {
-	ID                ID
-	SchedulerAddress  string
-	Capacity          Capacity
-	ContainerRuntimes []string
+	ID                  ID
+	SchedulerAddress    string
+	Capacity            Capacity
+	ContainerRuntimes   []string
+	AuthenticationToken string
 }
 
 // Run registers the worker and sends heartbeats until ctx is cancelled.
@@ -39,11 +40,19 @@ func Run(
 		)
 	}
 
+	credentials, err := newTokenCredentials(
+		cfg.AuthenticationToken,
+	)
+	if err != nil {
+		return err
+	}
+
 	connection, err := grpc.NewClient(
 		cfg.SchedulerAddress,
 		grpc.WithTransportCredentials(
 			insecure.NewCredentials(),
 		),
+		grpc.WithPerRPCCredentials(credentials),
 	)
 	if err != nil {
 		return fmt.Errorf(
@@ -57,9 +66,11 @@ func Run(
 		connection,
 	)
 
+	const workerRPCTimeout = 3 * time.Second
+
 	registerCtx, cancel := context.WithTimeout(
 		ctx,
-		5*time.Second,
+		workerRPCTimeout,
 	)
 
 	response, err := client.RegisterWorker(
@@ -99,7 +110,7 @@ func Run(
 		case <-ticker.C:
 			heartbeatCtx, cancel := context.WithTimeout(
 				ctx,
-				heartbeatInterval,
+				workerRPCTimeout,
 			)
 
 			_, err := client.Heartbeat(

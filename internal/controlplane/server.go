@@ -85,6 +85,7 @@ func (s *Server) RegisterWorker(
 		ctx,
 		&worker.Worker{
 			ID:                worker.ID(workerID),
+			Status:            worker.StatusAvailable,
 			Capacity:          capacity,
 			AvailableCapacity: capacity,
 			ContainerRuntimes: runtimes,

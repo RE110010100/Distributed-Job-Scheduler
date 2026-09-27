@@ -38,6 +38,10 @@ services:
       <<: *service-environment
       DJS_DATABASE_URL: postgres://postgres:postgres@postgres:5432/djs?sslmode=disable
       DJS_SCHEDULER_GRPC_ADDRESS: ":9090"
+      DJS_WORKER_HEARTBEAT_TIMEOUT: "15s"
+      DJS_WORKER_LIVENESS_CHECK_INTERVAL: "5s"
+      DJS_GRPC_RPC_TIMEOUT: "5s"
+      DJS_WORKER_AUTH_TOKEN: ${DJS_WORKER_AUTH_TOKEN:-development-worker-token}
     ports:
       - "9090:9090"
     depends_on:
@@ -56,6 +60,7 @@ services:
       DJS_SCHEDULER_ADDRESS: scheduler:9090
       DJS_WORKER_CPU_MILLIS: "4000"
       DJS_WORKER_MEMORY_BYTES: "8589934592"
+      DJS_WORKER_AUTH_TOKEN: ${DJS_WORKER_AUTH_TOKEN:-development-worker-token}
     depends_on:
       - scheduler
   

@@ -20,19 +20,15 @@ func main() {
 		log.Fatalf("load configuration: %v", err)
 	}
 
-	workerID := strings.TrimSpace(
-		os.Getenv("DJS_WORKER_ID"),
-	)
-	if workerID == "" {
-		log.Fatal("DJS_WORKER_ID must be set")
-	}
+	workerID := requiredString("DJS_WORKER_ID")
 
-	schedulerAddress := strings.TrimSpace(
-		os.Getenv("DJS_SCHEDULER_ADDRESS"),
+	schedulerAddress := requiredString(
+		"DJS_SCHEDULER_ADDRESS",
 	)
-	if schedulerAddress == "" {
-		log.Fatal("DJS_SCHEDULER_ADDRESS must be set")
-	}
+
+	authenticationToken := requiredString(
+		"DJS_WORKER_AUTH_TOKEN",
+	)
 
 	cpuMillis := requiredPositiveInt64(
 		"DJS_WORKER_CPU_MILLIS",
@@ -58,12 +54,17 @@ func main() {
 	err = worker.Run(
 		ctx,
 		worker.ClientConfig{
-			ID:               worker.ID(workerID),
+			ID: worker.ID(workerID),
+
 			SchedulerAddress: schedulerAddress,
+
+			AuthenticationToken: authenticationToken,
+
 			Capacity: worker.Capacity{
 				CPUMillis:   cpuMillis,
 				MemoryBytes: memoryBytes,
 			},
+
 			ContainerRuntimes: []string{
 				"docker",
 			},
@@ -76,10 +77,20 @@ func main() {
 	log.Print("worker service stopped")
 }
 
-func requiredPositiveInt64(name string) int64 {
+func requiredString(name string) string {
 	value := strings.TrimSpace(
 		os.Getenv(name),
 	)
+
+	if value == "" {
+		log.Fatalf("%s must be set", name)
+	}
+
+	return value
+}
+
+func requiredPositiveInt64(name string) int64 {
+	value := requiredString(name)
 
 	parsed, err := strconv.ParseInt(
 		value,

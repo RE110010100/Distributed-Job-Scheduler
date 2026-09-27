@@ -116,7 +116,8 @@ func TestRegisterWorker(t *testing.T) {
 func TestHeartbeatUpdatesLivenessAndCapacity(t *testing.T) {
 	repository := &fakeWorkerRepository{
 		worker: &worker.Worker{
-			ID: "worker-1",
+			ID:     "worker-1",
+			Status: worker.StatusAvailable,
 			Capacity: worker.Capacity{
 				CPUMillis:   4000,
 				MemoryBytes: 8 << 30,
@@ -179,4 +180,27 @@ func TestHeartbeatUpdatesLivenessAndCapacity(t *testing.T) {
 			response.GetAcknowledgedAt().AsTime(),
 		)
 	}
+}
+
+func (f *fakeWorkerRepository) MarkWorkersUnavailable(
+	_ context.Context,
+	heartbeatBefore time.Time,
+) (int64, error) {
+	if f.worker == nil {
+		return 0, nil
+	}
+
+	if f.worker.Status != worker.StatusAvailable {
+		return 0, nil
+	}
+
+	if !f.worker.LastHeartbeatAt.Before(
+		heartbeatBefore,
+	) {
+		return 0, nil
+	}
+
+	f.worker.Status = worker.StatusUnavailable
+
+	return 1, nil
 }

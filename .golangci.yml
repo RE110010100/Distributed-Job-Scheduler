@@ -1,6 +1,14 @@
 version: "2"
 
 linters:
+  settings:
+    revive:
+      rules:
+        - name: var-naming
+          arguments:
+            - ["ID"]
+            - ["VM"]
+            - ["API"]
   default: standard
   enable:
     - errorlint

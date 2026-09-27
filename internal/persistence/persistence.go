@@ -117,4 +117,9 @@ type WorkerRepository interface {
 		available worker.Capacity,
 		at time.Time,
 	) (*worker.Worker, error)
+
+	MarkWorkersUnavailable(
+		ctx context.Context,
+		heartbeatBefore time.Time,
+	) (int64, error)
 }

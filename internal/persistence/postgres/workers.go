@@ -32,46 +32,50 @@ func (s *Store) RegisterWorker(
 	}
 
 	const query = `
-		INSERT INTO workers (
-			worker_id,
-			cpu_millis,
-			memory_bytes,
-			available_cpu_millis,
-			available_memory_bytes,
-			container_runtimes,
-			registered_at,
-			last_heartbeat_at
-		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-		ON CONFLICT (worker_id)
-		DO UPDATE SET
-			cpu_millis = EXCLUDED.cpu_millis,
-			memory_bytes = EXCLUDED.memory_bytes,
-			available_cpu_millis =
-				EXCLUDED.available_cpu_millis,
-			available_memory_bytes =
-				EXCLUDED.available_memory_bytes,
-			container_runtimes =
-				EXCLUDED.container_runtimes,
-			registered_at = EXCLUDED.registered_at,
-			last_heartbeat_at =
-				EXCLUDED.last_heartbeat_at
-		RETURNING
-			worker_id,
-			cpu_millis,
-			memory_bytes,
-			available_cpu_millis,
-			available_memory_bytes,
-			container_runtimes,
-			registered_at,
-			last_heartbeat_at
-	`
+	INSERT INTO workers (
+		worker_id,
+		status,
+		cpu_millis,
+		memory_bytes,
+		available_cpu_millis,
+		available_memory_bytes,
+		container_runtimes,
+		registered_at,
+		last_heartbeat_at
+	)
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+	ON CONFLICT (worker_id)
+	DO UPDATE SET
+		status = EXCLUDED.status,
+		cpu_millis = EXCLUDED.cpu_millis,
+		memory_bytes = EXCLUDED.memory_bytes,
+		available_cpu_millis =
+			EXCLUDED.available_cpu_millis,
+		available_memory_bytes =
+			EXCLUDED.available_memory_bytes,
+		container_runtimes =
+			EXCLUDED.container_runtimes,
+		registered_at = EXCLUDED.registered_at,
+		last_heartbeat_at =
+			EXCLUDED.last_heartbeat_at
+	RETURNING
+		worker_id,
+		status,
+		cpu_millis,
+		memory_bytes,
+		available_cpu_millis,
+		available_memory_bytes,
+		container_runtimes,
+		registered_at,
+		last_heartbeat_at
+`
 
 	return scanWorker(
 		s.pool.QueryRow(
 			ctx,
 			query,
 			w.ID,
+			w.Status,
 			w.Capacity.CPUMillis,
 			w.Capacity.MemoryBytes,
 			w.AvailableCapacity.CPUMillis,
@@ -117,6 +121,7 @@ func scanWorker(
 
 	err := row.Scan(
 		&w.ID,
+		&w.Status,
 		&w.Capacity.CPUMillis,
 		&w.Capacity.MemoryBytes,
 		&w.AvailableCapacity.CPUMillis,
@@ -157,6 +162,7 @@ func (s *Store) HeartbeatWorker(
 	const query = `
 		UPDATE workers
 		SET
+			status = 'AVAILABLE',
 			available_cpu_millis = $2,
 			available_memory_bytes = $3,
 			last_heartbeat_at = $4
@@ -212,4 +218,32 @@ func (s *Store) HeartbeatWorker(
 	}
 
 	return nil, persistence.ErrConflict
+}
+
+// MarkWorkersUnavailable marks workers whose heartbeat has expired.
+func (s *Store) MarkWorkersUnavailable(
+	ctx context.Context,
+	heartbeatBefore time.Time,
+) (int64, error) {
+	const query = `
+		UPDATE workers
+		SET status = 'UNAVAILABLE'
+		WHERE
+			status = 'AVAILABLE'
+			AND last_heartbeat_at < $1
+	`
+
+	result, err := s.pool.Exec(
+		ctx,
+		query,
+		heartbeatBefore,
+	)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"mark stale workers unavailable: %w",
+			err,
+		)
+	}
+
+	return result.RowsAffected(), nil
 }
