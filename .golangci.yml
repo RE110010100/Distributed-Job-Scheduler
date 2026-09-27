@@ -7,6 +7,13 @@ linters:
     - misspell
     - nilerr
     - revive
+  exclusions:
+    rules:
+      # revive flags "api" as a meaningless package name; the name is intentional.
+      - linters:
+          - revive
+        path: ^internal/api/
+        text: "avoid meaningless package names"
 
 formatters:
   enable:
