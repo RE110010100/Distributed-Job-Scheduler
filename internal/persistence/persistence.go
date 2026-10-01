@@ -90,6 +90,12 @@ type AttemptRepository interface {
 		at time.Time,
 		failure *job.FailureInformation,
 	) (*job.ExecutionAttempt, error)
+
+	AcquireAssignedAttempt(
+		ctx context.Context,
+		workerID worker.ID,
+		at time.Time,
+	) (*job.ExecutionAttempt, *job.Job, error)
 }
 
 // Repository is the persistence capability required by the control plane.

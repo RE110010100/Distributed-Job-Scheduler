@@ -11,6 +11,7 @@ import (
 	"syscall"
 
 	"github.com/RE110010100/Distributed-Job-Scheduler/internal/config"
+	"github.com/RE110010100/Distributed-Job-Scheduler/internal/executor"
 	"github.com/RE110010100/Distributed-Job-Scheduler/internal/worker"
 )
 
@@ -51,6 +52,23 @@ func main() {
 		workerID,
 	)
 
+	dockerExecutor, err := executor.NewDockerExecutor()
+	if err != nil {
+		log.Fatalf(
+			"initialize Docker executor: %v",
+			err,
+		)
+	}
+
+	defer func() {
+		if err := dockerExecutor.Close(); err != nil {
+			log.Printf(
+				"close Docker executor: %v",
+				err,
+			)
+		}
+	}()
+
 	err = worker.Run(
 		ctx,
 		worker.ClientConfig{
@@ -68,6 +86,8 @@ func main() {
 			ContainerRuntimes: []string{
 				"docker",
 			},
+
+			Executor: dockerExecutor,
 		},
 	)
 	if err != nil {

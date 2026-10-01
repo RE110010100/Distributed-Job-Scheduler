@@ -8,6 +8,7 @@ import (
 	"time"
 
 	workerv1 "github.com/RE110010100/Distributed-Job-Scheduler/internal/gen/worker/v1"
+	"github.com/RE110010100/Distributed-Job-Scheduler/internal/job"
 	"github.com/RE110010100/Distributed-Job-Scheduler/internal/persistence"
 	"github.com/RE110010100/Distributed-Job-Scheduler/internal/worker"
 	"google.golang.org/grpc/codes"
@@ -23,16 +24,18 @@ type Server struct {
 	workerv1.UnimplementedWorkerControlServiceServer
 
 	workers           persistence.WorkerRepository
+	attempts          persistence.AttemptRepository
 	heartbeatInterval time.Duration
 	now               func() time.Time
 }
 
 // NewServer creates a worker control-plane server.
 func NewServer(
-	workers persistence.WorkerRepository,
+	repository persistence.Repository,
 ) *Server {
 	return &Server{
-		workers:           workers,
+		workers:           repository,
+		attempts:          repository,
 		heartbeatInterval: defaultHeartbeatInterval,
 		now: func() time.Time {
 			return time.Now().UTC()
@@ -226,5 +229,180 @@ func (s *Server) Heartbeat(
 
 	return &workerv1.HeartbeatResponse{
 		AcknowledgedAt: timestamppb.New(now),
+	}, nil
+}
+
+func resourceRequestToProto(
+	resources job.ResourceRequirements,
+) *workerv1.WorkerCapacity {
+	capacity := &workerv1.WorkerCapacity{}
+
+	if resources.CPURequestMillis != nil {
+		capacity.CpuMillis =
+			*resources.CPURequestMillis
+	}
+
+	if resources.MemoryRequestBytes != nil {
+		capacity.MemoryBytes =
+			*resources.MemoryRequestBytes
+	}
+
+	return capacity
+}
+
+func resourceLimitToProto(
+	resources job.ResourceRequirements,
+) *workerv1.WorkerCapacity {
+	capacity := &workerv1.WorkerCapacity{}
+
+	if resources.CPULimitMillis != nil {
+		capacity.CpuMillis =
+			*resources.CPULimitMillis
+	}
+
+	if resources.MemoryLimitBytes != nil {
+		capacity.MemoryBytes =
+			*resources.MemoryLimitBytes
+	}
+
+	return capacity
+}
+
+func assignmentToProto(
+	attempt *job.ExecutionAttempt,
+	j *job.Job,
+) *workerv1.JobAssignment {
+	assignment := &workerv1.JobAssignment{
+		JobId:         string(j.ID),
+		AttemptId:     string(attempt.ID),
+		AttemptNumber: attempt.AttemptNumber,
+
+		ContainerImage: j.Spec.ContainerImage,
+
+		Command: append(
+			[]string(nil),
+			j.Spec.Command...,
+		),
+
+		Args: append(
+			[]string(nil),
+			j.Spec.Args...,
+		),
+
+		Environment: cloneEnvironment(
+			j.Spec.Environment,
+		),
+	}
+
+	assignment.ResourceRequest = resourceRequestToProto(
+		j.Spec.Resources,
+	)
+
+	assignment.ResourceLimit = resourceLimitToProto(
+		j.Spec.Resources,
+	)
+
+	if j.Spec.Timeout != nil {
+		assignment.Timeout = durationpb.New(
+			*j.Spec.Timeout,
+		)
+	}
+
+	return assignment
+}
+
+func cloneEnvironment(
+	source map[string]string,
+) map[string]string {
+	if source == nil {
+		return nil
+	}
+
+	result := make(
+		map[string]string,
+		len(source),
+	)
+
+	for key, value := range source {
+		result[key] = value
+	}
+
+	return result
+}
+
+// AcquireJob returns one durable assignment belonging to the requesting
+// worker. An empty response means that no assignment is currently available.
+func (s *Server) AcquireJob(
+	ctx context.Context,
+	request *workerv1.AcquireJobRequest,
+) (*workerv1.AcquireJobResponse, error) {
+	if request == nil {
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"request is required",
+		)
+	}
+
+	workerID := strings.TrimSpace(
+		request.GetWorkerId(),
+	)
+	if workerID == "" {
+		return nil, status.Error(
+			codes.InvalidArgument,
+			"worker_id is required",
+		)
+	}
+
+	persistedWorker, err := s.workers.GetWorker(
+		ctx,
+		worker.ID(workerID),
+	)
+	switch {
+	case errors.Is(err, persistence.ErrNotFound):
+		return nil, status.Error(
+			codes.NotFound,
+			"worker is not registered",
+		)
+
+	case err != nil:
+		return nil, status.Error(
+			codes.Internal,
+			"failed to load worker",
+		)
+	}
+
+	if persistedWorker.Status != worker.StatusAvailable {
+		return nil, status.Error(
+			codes.FailedPrecondition,
+			"worker is unavailable",
+		)
+	}
+
+	attempt, j, err := s.attempts.AcquireAssignedAttempt(
+		ctx,
+		worker.ID(workerID),
+		s.now(),
+	)
+
+	if errors.Is(err, persistence.ErrNotFound) {
+		return &workerv1.AcquireJobResponse{}, nil
+	}
+
+	if errors.Is(err, persistence.ErrConflict) {
+		return &workerv1.AcquireJobResponse{}, nil
+	}
+
+	if err != nil {
+		return nil, status.Error(
+			codes.Internal,
+			"failed to acquire assigned job",
+		)
+	}
+
+	return &workerv1.AcquireJobResponse{
+		Assignment: assignmentToProto(
+			attempt,
+			j,
+		),
 	}, nil
 }

@@ -3,8 +3,10 @@ package worker
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
+	"github.com/RE110010100/Distributed-Job-Scheduler/internal/executor"
 	workerv1 "github.com/RE110010100/Distributed-Job-Scheduler/internal/gen/worker/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -17,7 +19,14 @@ type ClientConfig struct {
 	Capacity            Capacity
 	ContainerRuntimes   []string
 	AuthenticationToken string
+
+	Executor executor.Executor
 }
+
+const (
+	workerRPCTimeout   = 3 * time.Second
+	jobAcquireInterval = time.Second
+)
 
 // Run registers the worker and sends heartbeats until ctx is cancelled.
 func Run(
@@ -37,6 +46,12 @@ func Run(
 	if !cfg.Capacity.Valid() {
 		return fmt.Errorf(
 			"worker capacity must contain positive CPU and memory",
+		)
+	}
+
+	if cfg.Executor == nil {
+		return fmt.Errorf(
+			"worker executor must not be nil",
 		)
 	}
 
@@ -65,8 +80,6 @@ func Run(
 	client := workerv1.NewWorkerControlServiceClient(
 		connection,
 	)
-
-	const workerRPCTimeout = 3 * time.Second
 
 	registerCtx, cancel := context.WithTimeout(
 		ctx,
@@ -102,6 +115,11 @@ func Run(
 	ticker := time.NewTicker(heartbeatInterval)
 	defer ticker.Stop()
 
+	acquireTicker := time.NewTicker(
+		jobAcquireInterval,
+	)
+	defer acquireTicker.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -134,6 +152,68 @@ func Run(
 					err,
 				)
 			}
+
+		case <-acquireTicker.C:
+			acquireCtx, cancel := context.WithTimeout(
+				ctx,
+				workerRPCTimeout,
+			)
+
+			response, err := client.AcquireJob(
+				acquireCtx,
+				&workerv1.AcquireJobRequest{
+					WorkerId: string(cfg.ID),
+				},
+			)
+
+			cancel()
+
+			if err != nil {
+				return fmt.Errorf(
+					"acquire job: %w",
+					err,
+				)
+			}
+
+			if response.GetAssignment() == nil {
+				continue
+			}
+
+			assignment := response.GetAssignment()
+			if assignment == nil {
+				continue
+			}
+
+			localAssignment := assignmentFromProto(
+				assignment,
+			)
+
+			go func() {
+				if err := cfg.Executor.Execute(
+					ctx,
+					localAssignment,
+				); err != nil {
+					// TASK-035 captures structured execution outcomes and
+					// TASK-036 reports them to the control plane.
+					//
+					// Until then, execution failure is logged locally.
+					log.Printf(
+						"job execution failed job_id=%s attempt_id=%s error=%v",
+						localAssignment.JobID,
+						localAssignment.AttemptID,
+						err,
+					)
+
+					return
+				}
+
+				log.Printf(
+					"job execution finished job_id=%s attempt_id=%s",
+					localAssignment.JobID,
+					localAssignment.AttemptID,
+				)
+			}()
+
 		}
 	}
 }
@@ -145,4 +225,63 @@ func capacityToProto(
 		CpuMillis:   capacity.CPUMillis,
 		MemoryBytes: capacity.MemoryBytes,
 	}
+}
+
+func assignmentFromProto(
+	assignment *workerv1.JobAssignment,
+) executor.Assignment {
+	result := executor.Assignment{
+		JobID:          assignment.GetJobId(),
+		AttemptID:      assignment.GetAttemptId(),
+		ContainerImage: assignment.GetContainerImage(),
+
+		Command: append(
+			[]string(nil),
+			assignment.GetCommand()...,
+		),
+
+		Args: append(
+			[]string(nil),
+			assignment.GetArgs()...,
+		),
+
+		Environment: cloneStringMap(
+			assignment.GetEnvironment(),
+		),
+	}
+
+	resourceLimit := assignment.GetResourceLimit()
+
+	if resourceLimit != nil {
+		if resourceLimit.GetCpuMillis() > 0 {
+			cpuLimit := resourceLimit.GetCpuMillis()
+			result.CPULimitMillis = &cpuLimit
+		}
+
+		if resourceLimit.GetMemoryBytes() > 0 {
+			memoryLimit := resourceLimit.GetMemoryBytes()
+			result.MemoryLimitBytes = &memoryLimit
+		}
+	}
+
+	return result
+}
+
+func cloneStringMap(
+	source map[string]string,
+) map[string]string {
+	if source == nil {
+		return nil
+	}
+
+	result := make(
+		map[string]string,
+		len(source),
+	)
+
+	for key, value := range source {
+		result[key] = value
+	}
+
+	return result
 }

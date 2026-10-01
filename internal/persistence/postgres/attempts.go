@@ -11,6 +11,7 @@ import (
 
 	"github.com/RE110010100/Distributed-Job-Scheduler/internal/job"
 	"github.com/RE110010100/Distributed-Job-Scheduler/internal/persistence"
+	"github.com/RE110010100/Distributed-Job-Scheduler/internal/worker"
 )
 
 // CreateAttempt inserts a new execution attempt and sets its version to 1.
@@ -295,4 +296,155 @@ func (s *Store) classifyAttemptTransitionMiss(
 	}
 
 	return persistence.ErrConflict
+}
+
+// AcquireAssignedAttempt atomically acquires the oldest ASSIGNED attempt
+// belonging to workerID and transitions it to RUNNING.
+func (s *Store) AcquireAssignedAttempt(
+	ctx context.Context,
+	workerID worker.ID,
+	at time.Time,
+) (*job.ExecutionAttempt, *job.Job, error) {
+	if workerID == "" {
+		return nil, nil, fmt.Errorf(
+			"worker ID must not be empty",
+		)
+	}
+
+	tx, err := s.pool.BeginTx(
+		ctx,
+		pgx.TxOptions{},
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"begin attempt acquisition transaction: %w",
+			err,
+		)
+	}
+
+	defer func() {
+		_ = tx.Rollback(ctx)
+	}()
+
+	const selectAttempt = `
+		SELECT
+			attempt_id,
+			job_id,
+			worker_id,
+			attempt_number,
+			status,
+			version,
+			started_at,
+			completed_at,
+			failure_information
+		FROM execution_attempts
+		WHERE
+			worker_id = $1
+			AND status = 'ASSIGNED'
+		ORDER BY attempt_number ASC, attempt_id ASC
+		FOR UPDATE SKIP LOCKED
+		LIMIT 1
+	`
+
+	attempt, err := scanAttempt(
+		tx.QueryRow(
+			ctx,
+			selectAttempt,
+			workerID,
+		),
+	)
+	if errors.Is(err, persistence.ErrNotFound) {
+		return nil, nil, persistence.ErrNotFound
+	}
+
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"select assigned attempt for worker %q: %w",
+			workerID,
+			err,
+		)
+	}
+
+	const transitionAttempt = `
+		UPDATE execution_attempts
+		SET
+			status = 'RUNNING',
+			version = version + 1,
+			started_at = COALESCE(started_at, $2)
+		WHERE
+			attempt_id = $1
+			AND status = 'ASSIGNED'
+			AND version = $3
+		RETURNING
+			attempt_id,
+			job_id,
+			worker_id,
+			attempt_number,
+			status,
+			version,
+			started_at,
+			completed_at,
+			failure_information
+	`
+
+	runningAttempt, err := scanAttempt(
+		tx.QueryRow(
+			ctx,
+			transitionAttempt,
+			attempt.ID,
+			at,
+			attempt.Version,
+		),
+	)
+	if errors.Is(err, persistence.ErrNotFound) {
+		return nil, nil, persistence.ErrConflict
+	}
+
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"transition acquired attempt %q to running: %w",
+			attempt.ID,
+			err,
+		)
+	}
+
+	const selectJob = `
+		SELECT
+			job_id,
+			owner_id,
+			COALESCE(idempotency_key, ''),
+			specification,
+			status,
+			version,
+			created_at,
+			started_at,
+			completed_at,
+			cancellation_requested
+		FROM jobs
+		WHERE job_id = $1
+	`
+
+	j, err := scanJob(
+		tx.QueryRow(
+			ctx,
+			selectJob,
+			runningAttempt.JobID,
+		),
+	)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"load job %q for acquired attempt: %w",
+			runningAttempt.JobID,
+			err,
+		)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, nil, fmt.Errorf(
+			"commit attempt acquisition: %w",
+			err,
+		)
+	}
+
+	return runningAttempt, j, nil
 }

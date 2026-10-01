@@ -11,6 +11,10 @@ import (
 )
 
 type fakeWorkerRepository struct {
+	// Embedded so the fake satisfies persistence.Repository. Methods not
+	// implemented below are nil and panic if a test reaches them.
+	persistence.Repository
+
 	worker *worker.Worker
 }
 
