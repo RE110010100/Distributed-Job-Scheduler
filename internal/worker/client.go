@@ -189,28 +189,29 @@ func Run(
 			)
 
 			go func() {
-				if err := cfg.Executor.Execute(
+				executionResult, err := cfg.Executor.Execute(
 					ctx,
 					localAssignment,
-				); err != nil {
-					// TASK-035 captures structured execution outcomes and
-					// TASK-036 reports them to the control plane.
-					//
-					// Until then, execution failure is logged locally.
+				)
+
+				if err != nil {
 					log.Printf(
-						"job execution failed job_id=%s attempt_id=%s error=%v",
+						"execution infrastructure error job_id=%s attempt_id=%s error=%v",
 						localAssignment.JobID,
 						localAssignment.AttemptID,
 						err,
 					)
-
-					return
 				}
 
 				log.Printf(
-					"job execution finished job_id=%s attempt_id=%s",
-					localAssignment.JobID,
-					localAssignment.AttemptID,
+					"execution finished job_id=%s attempt_id=%s outcome=%s failure_code=%s exit_code=%v oom_killed=%t message=%q",
+					executionResult.JobID,
+					executionResult.AttemptID,
+					executionResult.Outcome,
+					executionResult.FailureCode,
+					executionResult.ExitCode,
+					executionResult.OOMKilled,
+					executionResult.Message,
 				)
 			}()
 
@@ -262,6 +263,10 @@ func assignmentFromProto(
 			memoryLimit := resourceLimit.GetMemoryBytes()
 			result.MemoryLimitBytes = &memoryLimit
 		}
+	}
+
+	if timeout := assignment.GetTimeout(); timeout != nil {
+		result.Timeout = timeout.AsDuration()
 	}
 
 	return result

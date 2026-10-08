@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/image"
@@ -93,31 +94,66 @@ func (e *DockerExecutor) pullImage(
 func (e *DockerExecutor) Execute(
 	ctx context.Context,
 	assignment Assignment,
-) error {
-	if assignment.JobID == "" {
-		return errors.New(
-			"job ID must not be empty",
-		)
+) (result ExecutionResult, err error) {
+	result = ExecutionResult{
+		JobID:     assignment.JobID,
+		AttemptID: assignment.AttemptID,
 	}
 
-	if assignment.AttemptID == "" {
-		return errors.New(
-			"attempt ID must not be empty",
-		)
+	defer func() {
+		result.CompletedAt = time.Now().UTC()
+	}()
+
+	if assignment.JobID == "" || assignment.AttemptID == "" {
+		result.Outcome = OutcomeFailed
+		result.FailureCode = FailureInvalidSpec
+		result.Message = "job ID and attempt ID are required"
+		return result, nil
 	}
 
-	if err := e.pullImage(
+	execCtx, cancel, contextErr := executionContext(
 		ctx,
+		assignment.Timeout,
+	)
+	if contextErr != nil {
+		result.Outcome = OutcomeFailed
+		result.FailureCode = FailureInvalidSpec
+		result.Message = contextErr.Error()
+		return result, nil
+	}
+	defer cancel()
+
+	setContextOutcome := func() {
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			result.Outcome = OutcomeTimedOut
+			result.FailureCode = FailureTimeout
+			result.Message = "execution deadline exceeded"
+			return
+		}
+
+		result.Outcome = OutcomeCancelled
+		result.FailureCode = FailureCancelled
+		result.Message = "execution context cancelled"
+	}
+
+	if pullErr := e.pullImage(
+		execCtx,
 		assignment.ContainerImage,
-	); err != nil {
-		return err
+	); pullErr != nil {
+		if execCtx.Err() != nil {
+			setContextOutcome()
+			return result, nil
+		}
+
+		result.Outcome = OutcomeInfrastructure
+		result.FailureCode = FailureImagePull
+		result.Message = pullErr.Error()
+		return result, pullErr
 	}
 
 	config := &container.Config{
 		Image: assignment.ContainerImage,
-		Env: environmentSlice(
-			assignment.Environment,
-		),
+		Env:   environmentSlice(assignment.Environment),
 	}
 
 	if len(assignment.Command) != 0 {
@@ -134,94 +170,175 @@ func (e *DockerExecutor) Execute(
 		)
 	}
 
-	hostConfig, err := hostConfigFor(
-		assignment,
-	)
-	if err != nil {
-		return err
+	hostConfig, configErr := hostConfigFor(assignment)
+	if configErr != nil {
+		result.Outcome = OutcomeFailed
+		result.FailureCode = FailureInvalidSpec
+		result.Message = configErr.Error()
+		return result, nil
 	}
 
-	created, err := e.client.ContainerCreate(
-		ctx,
+	created, createErr := e.client.ContainerCreate(
+		execCtx,
 		config,
 		hostConfig,
 		nil,
 		nil,
 		containerName(assignment),
 	)
-	if err != nil {
-		return fmt.Errorf(
-			"create container for attempt %q: %w",
-			assignment.AttemptID,
-			err,
-		)
+	if createErr != nil {
+		if execCtx.Err() != nil {
+			setContextOutcome()
+			return result, nil
+		}
+
+		result.Outcome = OutcomeInfrastructure
+		result.FailureCode = FailureContainerCreate
+		result.Message = createErr.Error()
+		return result, createErr
 	}
 
 	containerID := created.ID
+	result.ContainerID = containerID
 
 	defer func() {
-		cleanupCtx := context.WithoutCancel(ctx)
-
-		_ = e.client.ContainerRemove(
-			cleanupCtx,
-			containerID,
-			container.RemoveOptions{
-				Force:         true,
-				RemoveVolumes: true,
-			},
-		)
+		if cleanupErr := e.removeContainer(containerID); cleanupErr != nil {
+			// Do not erase the execution outcome. Surface cleanup
+			// failure separately through the returned error.
+			err = errors.Join(
+				err,
+				fmt.Errorf(
+					"remove container %q: %w",
+					containerID,
+					cleanupErr,
+				),
+			)
+		}
 	}()
 
-	if err := e.client.ContainerStart(
-		ctx,
+	if startErr := e.client.ContainerStart(
+		execCtx,
 		containerID,
 		container.StartOptions{},
-	); err != nil {
-		return fmt.Errorf(
-			"start container for attempt %q: %w",
-			assignment.AttemptID,
-			err,
-		)
+	); startErr != nil {
+		if execCtx.Err() != nil {
+			setContextOutcome()
+			return result, nil
+		}
+
+		result.Outcome = OutcomeInfrastructure
+		result.FailureCode = FailureContainerStart
+		result.Message = startErr.Error()
+		return result, startErr
 	}
 
-	waitResult, waitErr := e.client.ContainerWait(
-		ctx,
+	result.StartedAt = time.Now().UTC()
+
+	waitResults, waitErrors := e.client.ContainerWait(
+		execCtx,
 		containerID,
 		container.WaitConditionNotRunning,
 	)
 
 	select {
-	case err := <-waitErr:
-		if err != nil {
-			return fmt.Errorf(
-				"wait for attempt %q container: %w",
-				assignment.AttemptID,
-				err,
+	case waitErr, ok := <-waitErrors:
+		if !ok {
+			waitErr = errors.New("container wait error channel closed")
+		}
+		if waitErr != nil {
+			if execCtx.Err() != nil {
+				setContextOutcome()
+				if stopErr := e.terminateContainer(containerID); stopErr != nil {
+					err = errors.Join(err, stopErr)
+				}
+				return result, err
+			}
+
+			result.Outcome = OutcomeInfrastructure
+			result.FailureCode = FailureContainerWait
+			result.Message = waitErr.Error()
+
+			// An uncertain wait result is not evidence that the
+			// container stopped. Terminate before cleanup.
+			stopErr := e.terminateContainer(containerID)
+			return result, errors.Join(waitErr, stopErr)
+		}
+
+	case waitResult, ok := <-waitResults:
+		if !ok {
+			waitErr := errors.New("container wait result channel closed")
+			result.Outcome = OutcomeInfrastructure
+			result.FailureCode = FailureContainerWait
+			result.Message = waitErr.Error()
+			return result, errors.Join(
+				waitErr,
+				e.terminateContainer(containerID),
 			)
 		}
 
-	case result := <-waitResult:
-		if result.Error != nil {
-			return fmt.Errorf(
-				"container for attempt %q failed: %s",
-				assignment.AttemptID,
-				result.Error.Message,
+		if waitResult.Error != nil {
+			waitErr := errors.New(waitResult.Error.Message)
+			result.Outcome = OutcomeInfrastructure
+			result.FailureCode = FailureContainerWait
+			result.Message = waitErr.Error()
+			return result, errors.Join(
+				waitErr,
+				e.terminateContainer(containerID),
 			)
 		}
 
-		if result.StatusCode != 0 {
-			return fmt.Errorf(
-				"container for attempt %q exited with status %d",
-				assignment.AttemptID,
-				result.StatusCode,
-			)
+		exitCode := waitResult.StatusCode
+		result.ExitCode = &exitCode
+
+	case <-execCtx.Done():
+		setContextOutcome()
+
+		if stopErr := e.terminateContainer(containerID); stopErr != nil {
+			err = errors.Join(err, stopErr)
 		}
 
-	case <-ctx.Done():
-		return ctx.Err()
+		return result, err
 	}
 
-	return nil
+	inspectCtx, inspectCancel := context.WithTimeout(
+		context.Background(),
+		cleanupTimeout,
+	)
+	defer inspectCancel()
+
+	inspected, inspectErr := e.client.ContainerInspect(
+		inspectCtx,
+		containerID,
+	)
+	if inspectErr != nil {
+		result.Outcome = OutcomeInfrastructure
+		result.FailureCode = FailureContainerWait
+		result.Message = fmt.Sprintf(
+			"inspect container outcome: %v",
+			inspectErr,
+		)
+		return result, inspectErr
+	}
+
+	if inspected.State == nil {
+		inspectErr := errors.New("container state is unavailable")
+		result.Outcome = OutcomeInfrastructure
+		result.FailureCode = FailureContainerWait
+		result.Message = inspectErr.Error()
+		return result, inspectErr
+	}
+
+	result.OOMKilled = inspected.State.OOMKilled
+
+	if result.ExitCode == nil {
+		exitCode := int64(inspected.State.ExitCode)
+		result.ExitCode = &exitCode
+	}
+
+	result.Outcome, result.FailureCode, result.Message =
+		classifyExit(*result.ExitCode, result.OOMKilled)
+
+	return result, nil
 }
 
 func hostConfigFor(
@@ -338,4 +455,102 @@ func sanitizeContainerName(
 	}
 
 	return builder.String()
+}
+
+const (
+	defaultExecutionTimeout = 30 * time.Minute
+	stopGracePeriod         = 5 * time.Second
+	terminationTimeout      = 15 * time.Second
+	cleanupTimeout          = 10 * time.Second
+)
+
+func executionContext(
+	parent context.Context,
+	timeout time.Duration,
+) (context.Context, context.CancelFunc, error) {
+	if timeout < 0 {
+		return nil, nil, fmt.Errorf("execution timeout cannot be negative")
+	}
+
+	if timeout == 0 {
+		timeout = defaultExecutionTimeout
+	}
+
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	return ctx, cancel, nil
+}
+
+func classifyExit(
+	exitCode int64,
+	oomKilled bool,
+) (Outcome, FailureCode, string) {
+	switch {
+	case oomKilled:
+		return OutcomeResourceExceeded,
+			FailureOOMKilled,
+			"container was killed by the out-of-memory controller"
+
+	case exitCode != 0:
+		return OutcomeFailed,
+			FailureNonzeroExit,
+			fmt.Sprintf("container exited with status %d", exitCode)
+
+	default:
+		return OutcomeSucceeded, FailureNone, ""
+	}
+}
+
+func (e *DockerExecutor) terminateContainer(
+	containerID string,
+) error {
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		terminationTimeout,
+	)
+	defer cancel()
+
+	graceSeconds := int(stopGracePeriod.Seconds())
+
+	if err := e.client.ContainerStop(
+		ctx,
+		containerID,
+		container.StopOptions{
+			Timeout: &graceSeconds,
+		},
+	); err == nil {
+		return nil
+	}
+
+	if err := e.client.ContainerKill(
+		ctx,
+		containerID,
+		"SIGKILL",
+	); err != nil {
+		return fmt.Errorf(
+			"force-kill container %q: %w",
+			containerID,
+			err,
+		)
+	}
+
+	return nil
+}
+
+func (e *DockerExecutor) removeContainer(
+	containerID string,
+) error {
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		cleanupTimeout,
+	)
+	defer cancel()
+
+	return e.client.ContainerRemove(
+		ctx,
+		containerID,
+		container.RemoveOptions{
+			Force:         true,
+			RemoveVolumes: true,
+		},
+	)
 }
